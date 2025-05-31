@@ -272,6 +272,99 @@ class FreeCADRPC:
             FreeCAD.Console.PrintWarning(f"Failed to capture screenshot: {res}\n")
             return None
 
+    def get_nodes_workbench_screenshot(self) -> str:
+        """Get a screenshot of the Nodes workbench interface.
+        
+        Returns a base64-encoded string of the screenshot or None if the Nodes
+        workbench is not active or no node editor window is available.
+        """
+        def check_nodes_workbench_available():
+            try:
+                from PySide import QtWidgets, QtGui
+                
+                # Check if the Nodes workbench is loaded
+                wb = FreeCADGui.activeWorkbench()
+                if wb and hasattr(wb, 'MenuText') and 'Nodes' in wb.MenuText:
+                    FreeCAD.Console.PrintMessage("Nodes workbench is active\n")
+                else:
+                    # Try to find nodes workbench even if not currently active
+                    workbenches = FreeCADGui.listWorkbenches()
+                    nodes_available = any('nodes' in wb.lower() for wb in workbenches.keys())
+                    if not nodes_available:
+                        FreeCAD.Console.PrintWarning("Nodes workbench is not available\n")
+                        return False
+                
+                # Look for the node editor widget in the application
+                app = QtWidgets.QApplication.instance()
+                if not app:
+                    FreeCAD.Console.PrintWarning("No QApplication instance found\n")
+                    return False
+                
+                # Search for node editor windows/widgets
+                for widget in app.allWidgets():
+                    widget_class = widget.__class__.__name__
+                    widget_module = widget.__class__.__module__ if hasattr(widget.__class__, '__module__') else ''
+                    
+                    # Look for FCN (FreeCAD Nodes) widgets specifically
+                    if widget_class.startswith('FCN') and widget.isVisible():
+                        FreeCAD.Console.PrintMessage(f"Found FCN widget: {widget_class} from {widget_module}\n")
+                        return widget
+                    
+                    # Look for other node editor related widgets
+                    if any(keyword in widget_class.lower() for keyword in ['node', 'graph', 'scene']):
+                        if widget.isVisible() and any(keyword in widget_module.lower() for keyword in ['node', 'graph']):
+                            FreeCAD.Console.PrintMessage(f"Found potential node editor widget: {widget_class} from {widget_module}\n")
+                            return widget
+                    
+                    # Also check for main windows with node-related titles
+                    if hasattr(widget, 'windowTitle') and widget.windowTitle():
+                        title = widget.windowTitle().lower()
+                        if any(keyword in title for keyword in ['node', 'nodes', 'graph', 'visual', 'scripting']) and widget.isVisible():
+                            FreeCAD.Console.PrintMessage(f"Found node editor window: {widget.windowTitle()}\n")
+                            return widget
+                
+                FreeCAD.Console.PrintWarning("No active node editor interface found\n")
+                return False
+                
+            except Exception as e:
+                FreeCAD.Console.PrintError(f"Error checking Nodes workbench: {e}\n")
+                return False
+        
+        rpc_request_queue.put(check_nodes_workbench_available)
+        nodes_widget = rpc_response_queue.get()
+        
+        if not nodes_widget:
+            FreeCAD.Console.PrintWarning("Nodes workbench interface not available\n")
+            return None
+        
+        # Create screenshots directory if it doesn't exist
+        screenshots_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'screenshots', 'nodes')
+        os.makedirs(screenshots_dir, exist_ok=True)
+        
+        # Create temporary file for screenshot
+        fd, tmp_path = tempfile.mkstemp(suffix=".png", dir=screenshots_dir)
+        os.close(fd)
+        
+        rpc_request_queue.put(
+            lambda: self._save_nodes_workbench_screenshot(tmp_path, nodes_widget)
+        )
+        res = rpc_response_queue.get()
+        
+        if res is True:
+            try:
+                with open(tmp_path, "rb") as image_file:
+                    image_bytes = image_file.read()
+                    encoded = base64.b64encode(image_bytes).decode("utf-8")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            return encoded
+        else:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            FreeCAD.Console.PrintWarning(f"Failed to capture nodes workbench screenshot: {res}\n")
+            return None
+
     def _create_document_gui(self, name):
         doc = FreeCAD.newDocument(name)
         doc.recompute()
@@ -424,6 +517,30 @@ class FreeCADRPC:
             view.fitAll()
             view.saveImage(save_path, 1)
             return True
+        except Exception as e:
+            return str(e)
+
+    def _save_nodes_workbench_screenshot(self, save_path: str, nodes_widget):
+        try:
+            from PySide import QtWidgets, QtGui
+            
+            # Ensure the widget is valid and visible
+            if not nodes_widget or not nodes_widget.isVisible():
+                return "Node editor widget is not visible or invalid"
+            
+            # Capture screenshot of the node editor widget
+            pixmap = nodes_widget.grab()
+            if pixmap.isNull():
+                return "Failed to capture widget content"
+            
+            # Save the screenshot
+            success = pixmap.save(save_path, "PNG")
+            if not success:
+                return "Failed to save screenshot to file"
+            
+            FreeCAD.Console.PrintMessage(f"Nodes workbench screenshot saved to: {save_path}\n")
+            return True
+            
         except Exception as e:
             return str(e)
 

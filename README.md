@@ -123,6 +123,7 @@ git clone https://github.com/neka-nat/freecad-mcp.git
 * `execute_code`: Execute arbitrary Python code in FreeCAD.
 * `insert_part_from_library`: Insert a part from the [parts library](https://github.com/FreeCAD/FreeCAD-library).
 * `get_view`: Get a screenshot of the active view.
+* `get_nodes_workbench_screenshot`: Get a screenshot of the Nodes workbench interface.
 * `get_objects`: Get all objects in a document.
 * `get_object`: Get an object in a document.
 * `get_parts_list`: Get the list of parts in the [parts library](https://github.com/FreeCAD/FreeCAD-library).

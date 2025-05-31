@@ -87,6 +87,14 @@ else:
     def get_parts_list(self) -> list[str]:
         return self.server.get_parts_list()
 
+    def get_nodes_workbench_screenshot(self) -> str | None:
+        """Get a screenshot of the Nodes workbench interface."""
+        try:
+            return self.server.get_nodes_workbench_screenshot()
+        except Exception as e:
+            logger.error(f"Error getting nodes workbench screenshot: {e}")
+            return None
+
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
@@ -462,6 +470,193 @@ def get_view(ctx: Context, view_name: Literal["Isometric", "Front", "Top", "Righ
         return [ImageContent(type="image", data=screenshot, mimeType="image/png")]
     else:
         return [TextContent(type="text", text="Cannot get screenshot in the current view type (such as TechDraw or Spreadsheet)")]
+
+
+@mcp.tool()
+def get_nodes_workbench_screenshot(ctx: Context) -> list[ImageContent | TextContent]:
+    """Get a screenshot of the Nodes workbench interface.
+
+    This tool captures the visual node editor interface from the Nodes workbench,
+    showing the node graph with nodes, connections, and the overall visual scripting layout.
+    This is useful for understanding complex node setups and providing visual feedback
+    on parametric design workflows.
+
+    Returns:
+        A screenshot of the Nodes workbench interface, or an informative message
+        if the Nodes workbench is not available or active.
+    """
+    freecad = get_freecad_connection()
+    screenshot_data = freecad.get_nodes_workbench_screenshot()
+
+    if screenshot_data:
+        if "Nodes workbench interface is not available" in screenshot_data:
+             return [TextContent(type="text", text=screenshot_data)]
+        return [ImageContent(type="image", data=screenshot_data, mimeType="image/png")]
+    else:
+        return [TextContent(type="text", text="Failed to get Nodes workbench screenshot or it\'s not available.")]
+
+
+@mcp.tool()
+def mcp_freecad_nodes_create_node(
+    ctx: Context, 
+    node_type_op_code: str, 
+    title: str | None = None, 
+    x_pos: float = 0.0, 
+    y_pos: float = 0.0
+) -> list[TextContent | ImageContent]:
+    """
+    Creates a new node of a specified type in the FreeCAD Nodes workbench.
+
+    Args:
+        node_type_op_code: The operation code (string representation of the class) 
+                           for the type of node to create (e.g., "<class 'generators_solid_box.SolidBox'>").
+        title: Optional title for the new node. If None or empty, a default title may be used.
+        x_pos: The x-coordinate for the node's position in the graph.
+        y_pos: The y-coordinate for the node's position in the graph.
+
+    Returns:
+        A message indicating success or failure, and a screenshot of the Nodes workbench.
+    """
+    freecad = get_freecad_connection()
+
+    # Construct the Python code to be executed in FreeCAD
+    # Ensure string formatting correctly handles quotes in title and op_code if they were to appear,
+    # though op_code format is fixed and title is generally simple.
+    
+    # Sanitize title for use in a Python string literal within the script
+    safe_title_str = "None" # Default to Python's None if title is None
+    if title is not None:
+        # Escape backslashes and single quotes for the Python string
+        escaped_title = title.replace("\\\\", "\\\\\\\\").replace("'", "\\\\'")
+        safe_title_str = f"'{escaped_title}'"
+
+    script = f"""
+from PySide import QtWidgets
+# QPointF is not strictly needed if setPos takes x, y directly
+import FreeCADGui
+import sys
+import traceback
+
+print(f"--- MCP: Creating Node ---")
+print(f"OpCode: {node_type_op_code!r}, Title: {title}, Position: ({x_pos}, {y_pos})")
+
+fcn_sub_window_widget = None
+scene = None
+node_created_message = "Node creation status unknown."
+
+app = QtWidgets.QApplication.instance()
+if app:
+    all_widgets = app.allWidgets()
+    for w in all_widgets:
+        if w.__class__.__name__ == 'FCNSubWindow' and w.isVisible():
+            fcn_sub_window_widget = w
+            break 
+    
+    if fcn_sub_window_widget and hasattr(fcn_sub_window_widget, 'scene'):
+        scene = fcn_sub_window_widget.scene
+
+if not scene:
+    node_created_message = "Error: No active FCNSubWindow (Nodes editor) with a scene found."
+    print(node_created_message)
+else:
+    print(f"Found FCNSubWindow: {{fcn_sub_window_widget}} with scene: {{scene}}")
+    NodesStore_class = None
+    try:
+        from core.nodes_conf import NodesStore as NodesStoreFromImport 
+        NodesStore_class = NodesStoreFromImport
+        print(f"Successfully imported NodesStore: {{NodesStore_class}}")
+
+        if not NodesStore_class.nodes:
+            print("Warning: NodesStore.nodes is empty. Attempting to refresh.")
+            NodesStore_class.refresh_nodes_list()
+            if NodesStore_class.nodes:
+                print(f"NodesStore.nodes refreshed. Count: {{len(NodesStore_class.nodes)}}")
+            else:
+                print("Error: Failed to refresh NodesStore.nodes after import.")
+        
+    except ImportError as e_import:
+        node_created_message = f"ImportError: Could not import NodesStore: {{str(e_import)}}. Check FreeCAD Python env."
+        print(node_created_message)
+    except Exception as e_ns_init:
+        node_created_message = f"Error initializing NodesStore: {{str(e_ns_init)}}"
+        print(node_created_message)
+        traceback.print_exc()
+
+    if NodesStore_class and NodesStore_class.nodes:
+        actual_op_code_to_use = "{node_type_op_code}" # Use the direct op_code from arg
+        
+        if actual_op_code_to_use not in NodesStore_class.nodes:
+            node_created_message = f"Error: OpCode '{{actual_op_code_to_use}}' not found in NodesStore.nodes."
+            print(node_created_message)
+            print(f"Available op_codes (first 10): {{list(NodesStore_class.nodes.keys())[:10]}}")
+        else:
+            try:
+                NodeClass = NodesStore_class.get_class_from_opcode(actual_op_code_to_use)
+                if not NodeClass:
+                    node_created_message = f"Error: get_class_from_opcode returned None for '{{actual_op_code_to_use}}'."
+                    print(node_created_message)
+                else:
+                    print(f"Got NodeClass: {{NodeClass}} for op_code: {{actual_op_code_to_use}}")
+                    node_instance = NodeClass(scene)
+                    
+                    # Use float for positions passed to setPos
+                    node_instance.setPos(float({x_pos}), float({y_pos}))
+                    
+                    node_title_to_set = {safe_title_str} # Use the sanitized title
+                    if node_title_to_set is None: # Check for Python None after sanitization
+                        node_title_to_set = getattr(NodeClass, 'op_title', f"Node_{{node_instance.id}}")
+                    node_instance.title = node_title_to_set
+                    
+                    scene.history.storeHistory(f"Created node {{node_instance.title}} via MCP", setModified=True)
+                    node_created_message = f"Successfully created node: '{{node_instance.title}}' (Type: {{actual_op_code_to_use.split('.')[-1].replace("'>", '')}}), ID: {{node_instance.id}}."
+                    print(node_created_message)
+            except Exception as e_create:
+                node_created_message = f"Error creating node with op_code '{{actual_op_code_to_use}}': {{str(e_create)}}"
+                print(node_created_message)
+                traceback.print_exc()
+    elif not NodesStore_class:
+        node_created_message = "Critical Error: NodesStore_class not available after import attempts."
+        print(node_created_message)
+    elif NodesStore_class and not NodesStore_class.nodes:
+         node_created_message = "Error: NodesStore_class.nodes is empty and could not be refreshed."
+         print(node_created_message)
+
+print(node_created_message) # Ensure the final message is printed for capture
+"""
+
+    # Execute the script
+    response_content = []
+    try:
+        execution_result = freecad.execute_code(script)
+        raw_script_output = execution_result.get("message", "").strip()
+        output_lines = raw_script_output.split('\\\\n')
+        
+        # Default message if specific indicators aren't found
+        final_status_message = "Node creation script executed. See log for details."
+        if output_lines:
+            final_status_message = output_lines[-1] # Get the last actual printed line as the primary status
+
+        if "Successfully created node" in raw_script_output: # Check in the whole output
+            response_content.append(TextContent(type="text", text=final_status_message))
+        elif "Error" in raw_script_output or "Warning" in raw_script_output or "Critical" in raw_script_output :
+            # If error indicators are in the output, prioritize showing the full log clearly.
+            response_content.append(TextContent(type="text", text=f"Node creation issues detected. Status: '{final_status_message}'. Full Log:\\n{raw_script_output}"))
+        else: # Fallback for non-error, non-explicit-success cases
+            response_content.append(TextContent(type="text", text=f"Node creation attempt finished. Final line: '{final_status_message}'. Full Log:\\n{raw_script_output}"))
+
+    except Exception as e:
+        logger.error(f"MCP tool mcp_freecad_nodes_create_node failed: {{str(e)}}")
+        response_content.append(TextContent(type="text", text=f"Failed to execute node creation script: {{str(e)}}"))
+
+    # Add a screenshot
+    screenshot_data = freecad.get_nodes_workbench_screenshot()
+    if screenshot_data:
+        if "Nodes workbench interface is not available" in screenshot_data:
+             response_content.append(TextContent(type="text", text=screenshot_data))
+        elif not _only_text_feedback: # _only_text_feedback is a global defined in the file
+            response_content.append(ImageContent(type="image", data=screenshot_data, mimeType="image/png"))
+    
+    return response_content
 
 
 @mcp.tool()
