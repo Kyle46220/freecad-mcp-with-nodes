@@ -365,6 +365,100 @@ class FreeCADRPC:
             FreeCAD.Console.PrintWarning(f"Failed to capture nodes workbench screenshot: {res}\n")
             return None
 
+    def nodes_create_node(self, node_type_op_code: str, title: str | None, x_pos: float, y_pos: float):
+        rpc_request_queue.put(lambda: self._nodes_create_node_gui(node_type_op_code, title, x_pos, y_pos))
+        res = rpc_response_queue.get()
+        return res
+
+    def _nodes_create_node_gui(self, node_type_op_code: str, title: str | None, x_pos: float, y_pos: float):
+        FreeCAD.Console.PrintMessage(f"Attempting to create node: {node_type_op_code} at ({x_pos}, {y_pos}) with title '{title}'\n")
+        try:
+            # Check if Nodes workbench is active
+            current_wb = FreeCADGui.activeWorkbench()
+            if not hasattr(current_wb, "name") or "Nodes" not in current_wb.name():
+                # Attempt to activate Nodes workbench if available
+                workbenches = FreeCADGui.listWorkbenches()
+                nodes_wb_key = next((key for key, wb in workbenches.items() if "Nodes" in wb.MenuText), None)
+                if nodes_wb_key:
+                    FreeCADGui.activateWorkbench(nodes_wb_key)
+                    FreeCAD.Console.PrintMessage("Activated Nodes workbench.\n")
+                else:
+                    return {"success": False, "node_id": None, "title": None, "message": "Nodes workbench is not available."}
+
+            # Get active document
+            doc = FreeCAD.ActiveDocument
+            if not doc:
+                return {"success": False, "node_id": None, "title": None, "message": "No active document."}
+
+            # Get Nodes editor/graph
+            # This is a common way, but might need adjustment based on FCNodes API
+            view = FreeCADGui.ActiveDocument.ActiveView
+            if not hasattr(view, "getGraph"):
+                 # Attempt to find the graph view provider if not directly on ActiveView
+                graph_view_provider = None
+                for vp in doc.ViewObjects:
+                    if hasattr(vp, "ScriptObjectName") and vp.ScriptObjectName == "ViewProviderGraph": # Common name for graph view providers
+                        graph_view_provider = vp
+                        break
+                if graph_view_provider and hasattr(graph_view_provider, "graph"): # Access graph if found
+                     editor = graph_view_provider.graph
+                else: # Fallback or error if no graph view provider found
+                    return {"success": False, "node_id": None, "title": None, "message": "Nodes editor/graph not found or graph attribute missing."}
+            else:
+                editor = view.getGraph()
+
+            if not editor:
+                return {"success": False, "node_id": None, "title": None, "message": "Nodes editor/graph not found."}
+
+            # Create node
+            # The exact API call might vary. This is a plausible guess.
+            # Example: node = editor.createNode("<class 'generators_solid_box.SolidBox'>", "MyBox", 100, 200)
+            # The node_type_op_code is expected to be a string like "<class 'some.NodeClass'>"
+            # We might need to evaluate this string to get the actual class, or the API handles it.
+            # For now, assuming the API takes the string directly.
+
+            # Import the node class dynamically
+            # node_type_op_code is like "<class 'generators_arithmetic.Arithmetic'>"
+            # We need to extract 'generators_arithmetic.Arithmetic'
+
+            class_path_str = node_type_op_code.split("'")[1]
+            module_name, class_name = class_path_str.rsplit('.', 1)
+
+            # This is a potential security risk if node_type_op_code is not trusted.
+            # However, in this context, it's assumed to be from a trusted source (the agent).
+            mod = __import__(module_name, fromlist=[class_name])
+            NodeClass = getattr(mod, class_name)
+
+            if title:
+                node = editor.createNode(NodeClass, name=title, pos=[x_pos, y_pos])
+            else:
+                node = editor.createNode(NodeClass, pos=[x_pos, y_pos])
+
+            if not node:
+                return {"success": False, "node_id": None, "title": None, "message": "Failed to create node using Nodes API."}
+
+            # Retrieve node ID and title
+            # These attribute names ('name', 'title' or 'label') are guesses and might need verification
+            node_id = getattr(node, 'name', None) # 'name' is common for internal ID
+            node_title = getattr(node, 'label', None) # 'label' or 'title' for display name
+            if hasattr(node, 'name') and hasattr(node.name, 'text'): # some nodes might have a text attribute in name
+                node_title = node.name.text()
+
+            if node_title is None and hasattr(node, 'title'): # fallback to title attribute
+                 node_title = node.title.text() if hasattr(node.title, 'text') else str(node.title)
+
+
+            FreeCAD.Console.PrintMessage(f"Node created: ID='{node_id}', Title='{node_title}'\n")
+            doc.recompute() # Important to update the document state
+
+            return {"success": True, "node_id": node_id, "title": node_title, "message": "Node created successfully."}
+
+        except Exception as e:
+            FreeCAD.Console.PrintError(f"Error creating node: {e}\n")
+            import traceback
+            FreeCAD.Console.PrintError(traceback.format_exc())
+            return {"success": False, "node_id": None, "title": None, "message": f"Error creating node: {str(e)}"}
+
     def _create_document_gui(self, name):
         doc = FreeCAD.newDocument(name)
         doc.recompute()

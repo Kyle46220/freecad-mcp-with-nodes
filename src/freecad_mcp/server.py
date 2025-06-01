@@ -87,6 +87,16 @@ else:
     def get_parts_list(self) -> list[str]:
         return self.server.get_parts_list()
 
+    def nodes_create_node(self, node_type_op_code: str, title: str | None, x_pos: float, y_pos: float) -> dict[str, Any]:
+        return self.server.nodes_create_node(node_type_op_code, title, x_pos, y_pos)
+
+    def get_nodes_workbench_screenshot(self) -> str | None:
+        try:
+            return self.server.get_nodes_workbench_screenshot()
+        except Exception as e:
+            logger.error(f"Error getting nodes workbench screenshot: {e}")
+            return None
+
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
@@ -148,6 +158,20 @@ def add_screenshot_if_available(response, screenshot):
                  "Switch to a 3D view to see visual feedback."
         ))
     return response
+
+
+# Helper function to safely add nodes workbench screenshot to response
+def add_nodes_screenshot_if_available(response: list[TextContent | ImageContent], screenshot: str | None):
+    """Safely add nodes workbench screenshot to response only if it's available and not in text-only mode."""
+    if screenshot is not None and not _only_text_feedback:
+        response.append(ImageContent(type="image", data=screenshot, mimeType="image/png"))
+    elif not _only_text_feedback: # Screenshot was expected but not available
+        response.append(TextContent(
+            type="text",
+            text="Note: Nodes workbench screenshot could not be retrieved. Ensure the Nodes workbench is open and visible in FreeCAD."
+        ))
+    # No message needed if _only_text_feedback is true, as visual feedback is not expected.
+    # The function modifies 'response' in-place, no return needed.
 
 
 @mcp.tool()
@@ -561,6 +585,76 @@ def get_parts_list(ctx: Context) -> list[str]:
         return [
             TextContent(type="text", text=f"No parts found in the parts library. You must add parts_library addon.")
         ]
+
+
+@mcp.tool()
+def mcp_freecad_nodes_create_node(ctx: Context, node_type_op_code: str, title: str | None = None, x_pos: float = 0.0, y_pos: float = 0.0) -> list[TextContent | ImageContent]:
+    """Create a new node in the FreeCAD Nodes workbench.
+
+    Args:
+        node_type_op_code: The type operation code of the node to create (e.g., "<class 'generators_primitives_number.Number'>").
+        title: Optional title for the new node.
+        x_pos: The x-coordinate for the node's position in the editor.
+        y_pos: The y-coordinate for the node's position in the editor.
+
+    Returns:
+        A message indicating the success or failure of the node creation,
+        and a screenshot of the Nodes workbench if available.
+
+    Examples:
+        To create a 'Number' node with the title "MyNumber" at position (100, 50):
+        ```json
+        {
+            "node_type_op_code": "<class 'generators_primitives_number.Number'>",
+            "title": "MyNumber",
+            "x_pos": 100.0,
+            "y_pos": 50.0
+        }
+        ```
+        To create an 'Arithmetic' node with default title at origin:
+        ```json
+        {
+            "node_type_op_code": "<class 'operators_arithmetic.Arithmetic'>"
+        }
+        ```
+    """
+    freecad = get_freecad_connection()
+    response_content = []
+    try:
+        res = freecad.nodes_create_node(node_type_op_code, title, x_pos, y_pos)
+        if res["success"]:
+            response_content.append(
+                TextContent(type="text", text=f"Node '{res.get('title', 'N/A')}' (ID: {res.get('node_id', 'N/A')}) created successfully: {res.get('message', '')}")
+            )
+        else:
+            response_content.append(
+                TextContent(type="text", text=f"Failed to create node: {res.get('message', 'Unknown error')}")
+            )
+    except Exception as e:
+        logger.error(f"MCP tool mcp_freecad_nodes_create_node failed: {str(e)}")
+        response_content.append(
+            TextContent(type="text", text=f"An error occurred while creating the node: {str(e)}")
+        )
+        # Attempt to get screenshot even if node creation failed, to show current state
+        try:
+            screenshot = freecad.get_nodes_workbench_screenshot()
+            add_nodes_screenshot_if_available(response_content, screenshot)
+        except Exception as se:
+            logger.error(f"Failed to get nodes workbench screenshot after node creation error: {str(se)}")
+            if not _only_text_feedback: # Add message only if visual feedback was expected
+                response_content.append(TextContent(type="text", text="Nodes workbench screenshot could not be retrieved due to an additional error during error handling."))
+        return response_content
+
+    # Try to get screenshot after successful or failed attempt (if no exception above)
+    try:
+        screenshot = freecad.get_nodes_workbench_screenshot()
+        add_nodes_screenshot_if_available(response_content, screenshot)
+    except Exception as e:
+        logger.error(f"Failed to get nodes workbench screenshot: {str(e)}")
+        if not _only_text_feedback: # Add message only if visual feedback was expected
+            response_content.append(TextContent(type="text", text="Failed to retrieve Nodes workbench screenshot due to an error."))
+
+    return response_content
 
 
 @mcp.prompt()
