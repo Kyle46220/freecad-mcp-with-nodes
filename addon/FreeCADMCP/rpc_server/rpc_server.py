@@ -375,7 +375,7 @@ class FreeCADRPC:
         try:
             # Check if Nodes workbench is active
             current_wb = FreeCADGui.activeWorkbench()
-            if not hasattr(current_wb, "name") or "Nodes" not in current_wb.name():
+            if not hasattr(current_wb, "MenuText") or "Nodes" not in current_wb.MenuText:
                 # Attempt to activate Nodes workbench if available
                 workbenches = FreeCADGui.listWorkbenches()
                 nodes_wb_key = next((key for key, wb in workbenches.items() if "Nodes" in wb.MenuText), None)
@@ -390,68 +390,121 @@ class FreeCADRPC:
             if not doc:
                 return {"success": False, "node_id": None, "title": None, "message": "No active document."}
 
-            # Get Nodes editor/graph
-            # This is a common way, but might need adjustment based on FCNodes API
-            view = FreeCADGui.ActiveDocument.ActiveView
-            if not hasattr(view, "getGraph"):
-                 # Attempt to find the graph view provider if not directly on ActiveView
-                graph_view_provider = None
-                for vp in doc.ViewObjects:
-                    if hasattr(vp, "ScriptObjectName") and vp.ScriptObjectName == "ViewProviderGraph": # Common name for graph view providers
-                        graph_view_provider = vp
+            # Import required modules
+            try:
+                import nodes_locator
+                from core.nodes_conf import NodesStore
+            except ImportError as e:
+                return {"success": False, "node_id": None, "title": None, "message": f"Cannot import nodes modules: {e}"}
+
+            # Get the nodes workbench and window
+            try:
+                nodes_wb = nodes_locator.get_nodes_workbench()
+                if not nodes_wb:
+                    return {"success": False, "node_id": None, "title": None, "message": "Nodes workbench not available."}
+                
+                nodes_window = nodes_wb.window
+                if not nodes_window:
+                    return {"success": False, "node_id": None, "title": None, "message": "Nodes window not available."}
+                
+                # Make sure the nodes window is shown
+                if hasattr(nodes_window, 'show'):
+                    nodes_window.show()
+                
+            except Exception as e:
+                return {"success": False, "node_id": None, "title": None, "message": f"Error accessing Nodes workbench: {e}"}
+
+            # Refresh nodes list to ensure all nodes are loaded
+            NodesStore.refresh_nodes_list()
+            
+            # Get the current editor (or create one if needed)
+            current_editor = nodes_window.getCurrentNodeEditorWidget()
+            if not current_editor:
+                # Try to create a new file/editor
+                if hasattr(nodes_window, 'onFileNew'):
+                    nodes_window.onFileNew()
+                    current_editor = nodes_window.getCurrentNodeEditorWidget()
+                
+                if not current_editor:
+                    return {"success": False, "node_id": None, "title": None, "message": "Could not create or access node editor."}
+            
+            # Get the scene
+            if not hasattr(current_editor, 'scene'):
+                return {"success": False, "node_id": None, "title": None, "message": "Node editor has no scene."}
+            
+            scene = current_editor.scene
+            if not scene:
+                return {"success": False, "node_id": None, "title": None, "message": "Scene is not available."}
+
+            # Find the node class by op_code or by matching the node_type_op_code string
+            node_class = None
+            
+            # First try direct lookup if it's already an op_code
+            if node_type_op_code in NodesStore.nodes:
+                node_class = NodesStore.nodes[node_type_op_code]
+            else:
+                # Try to find by matching the string representation
+                for op_code, cls in NodesStore.nodes.items():
+                    if str(cls) == node_type_op_code or op_code == node_type_op_code:
+                        node_class = cls
                         break
-                if graph_view_provider and hasattr(graph_view_provider, "graph"): # Access graph if found
-                     editor = graph_view_provider.graph
-                else: # Fallback or error if no graph view provider found
-                    return {"success": False, "node_id": None, "title": None, "message": "Nodes editor/graph not found or graph attribute missing."}
-            else:
-                editor = view.getGraph()
+                
+                # If still not found, try to find by class name or op_title
+                if not node_class:
+                    # Extract class name from node_type_op_code like "<class 'number_number.Number'>"
+                    if node_type_op_code.startswith("<class '") and node_type_op_code.endswith("'>"):
+                        class_path = node_type_op_code[8:-2]  # Remove "<class '" and "'>"
+                        class_name = class_path.split('.')[-1]  # Get the last part
+                        
+                        for op_code, cls in NodesStore.nodes.items():
+                            if (hasattr(cls, '__name__') and cls.__name__ == class_name) or \
+                               (hasattr(cls, 'op_title') and cls.op_title == class_name):
+                                node_class = cls
+                                break
+            
+            if not node_class:
+                available_nodes = [f"{getattr(cls, 'op_title', cls.__name__)}" for cls in NodesStore.nodes.values()]
+                return {"success": False, "node_id": None, "title": None, 
+                       "message": f"Node type '{node_type_op_code}' not found. Available: {available_nodes[:10]}"}
 
-            if not editor:
-                return {"success": False, "node_id": None, "title": None, "message": "Nodes editor/graph not found."}
-
-            # Create node
-            # The exact API call might vary. This is a plausible guess.
-            # Example: node = editor.createNode("<class 'generators_solid_box.SolidBox'>", "MyBox", 100, 200)
-            # The node_type_op_code is expected to be a string like "<class 'some.NodeClass'>"
-            # We might need to evaluate this string to get the actual class, or the API handles it.
-            # For now, assuming the API takes the string directly.
-
-            # Import the node class dynamically
-            # node_type_op_code is like "<class 'generators_arithmetic.Arithmetic'>"
-            # We need to extract 'generators_arithmetic.Arithmetic'
-
-            class_path_str = node_type_op_code.split("'")[1]
-            module_name, class_name = class_path_str.rsplit('.', 1)
-
-            # This is a potential security risk if node_type_op_code is not trusted.
-            # However, in this context, it's assumed to be from a trusted source (the agent).
-            mod = __import__(module_name, fromlist=[class_name])
-            NodeClass = getattr(mod, class_name)
-
-            if title:
-                node = editor.createNode(NodeClass, name=title, pos=[x_pos, y_pos])
-            else:
-                node = editor.createNode(NodeClass, pos=[x_pos, y_pos])
-
-            if not node:
-                return {"success": False, "node_id": None, "title": None, "message": "Failed to create node using Nodes API."}
-
-            # Retrieve node ID and title
-            # These attribute names ('name', 'title' or 'label') are guesses and might need verification
-            node_id = getattr(node, 'name', None) # 'name' is common for internal ID
-            node_title = getattr(node, 'label', None) # 'label' or 'title' for display name
-            if hasattr(node, 'name') and hasattr(node.name, 'text'): # some nodes might have a text attribute in name
-                node_title = node.name.text()
-
-            if node_title is None and hasattr(node, 'title'): # fallback to title attribute
-                 node_title = node.title.text() if hasattr(node.title, 'text') else str(node.title)
-
-
-            FreeCAD.Console.PrintMessage(f"Node created: ID='{node_id}', Title='{node_title}'\n")
-            doc.recompute() # Important to update the document state
-
-            return {"success": True, "node_id": node_id, "title": node_title, "message": "Node created successfully."}
+            # Create the node
+            try:
+                node = node_class(scene)
+                FreeCAD.Console.PrintMessage(f"Created node: {node}\n")
+                
+                # Set position
+                node.setPos(x_pos, y_pos)
+                
+                # Try to set title if provided and supported
+                if title and hasattr(node, 'title') and hasattr(node.title, 'setText'):
+                    node.title.setText(title)
+                
+                # Get node properties for return
+                node_id = getattr(node, 'id', None)
+                # Convert node_id to string to avoid XML-RPC integer overflow
+                if node_id is not None:
+                    node_id = str(node_id)
+                    
+                node_title = None
+                
+                if hasattr(node, 'title') and hasattr(node.title, 'text'):
+                    node_title = node.title.text()
+                elif hasattr(node, 'op_title'):
+                    node_title = node.op_title
+                elif title:
+                    node_title = title
+                
+                # Store history for undo/redo
+                if hasattr(scene, 'history'):
+                    scene.history.storeHistory(f"Created node {node.__class__.__name__} via MCP", setModified=True)
+                
+                FreeCAD.Console.PrintMessage(f"Node created successfully: ID='{node_id}', Title='{node_title}'\n")
+                doc.recompute()  # Update the document state
+                
+                return {"success": True, "node_id": node_id, "title": node_title, "message": "Node created successfully."}
+                
+            except Exception as e:
+                return {"success": False, "node_id": None, "title": None, "message": f"Error creating node instance: {str(e)}"}
 
         except Exception as e:
             FreeCAD.Console.PrintError(f"Error creating node: {e}\n")
