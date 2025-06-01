@@ -1,51 +1,51 @@
 # Development Workflow for FreeCAD Nodes Workbench MCP Tools
 
-This document outlines the iterative process for developing new MCP (Model Context Protocol) tools that interact with the FreeCAD Nodes workbench.
+This document outlines the iterative process for developing new MCP (Model Context Protocol) tools that interact with the FreeCAD Nodes workbench, utilizing dedicated RPC methods in the FreeCAD addon.
 
 ## Development Steps
 
 The following process should be followed for each new tool identified in the `docs/nodes_tools_plan.md`:
 
-### 1. Script Development and Verification (using `freecad.execute_code`)
+### 1. RPC Method Design & Logic Development (within FreeCAD Addon)
 
-*   **Objective**: Develop and verify a Python script that achieves the core functionality of the intended MCP tool directly within the FreeCAD environment.
+*   **Objective**: Design and implement the core logic for the new operation as a dedicated method within the `FreeCADRPC` class in `addon/FreeCADMCP/rpc_server/rpc_server.py`.
 *   **Method**:
-    *   Utilize the existing `freecad.execute_code` MCP tool to iteratively send Python script snippets to FreeCAD.
-    *   The script should directly interact with the FreeCAD Nodes workbench API (e.g., finding the Nodes editor, creating nodes, linking them, setting properties via `NodesStore` or direct scene manipulation).
-    *   Use `freecad.execute_code` not only to perform actions but also to run checks and verifications. For example, after a script attempts to create a node, another `execute_code` call can be made to list nodes in the scene or check properties of the newly created node to confirm success.
-    *   The `freecad.get_nodes_workbench_screenshot` tool should be used frequently to get visual feedback on the state of the Nodes editor after script execution.
-    *   Continue this iterative process until the script reliably performs the desired action and provides clear feedback (e.g., success/failure messages, relevant data printed to the FreeCAD console which is captured by `execute_code`).
+    *   Define the new RPC method signature (e.g., `def nodes_create_node(self, doc_name, node_type_op_code, ...):`) in `FreeCADRPC`.
+    *   Implement the core logic that interacts with the FreeCAD Nodes workbench API directly within this method (or its corresponding `_gui` suffixed method if GUI interaction is needed, following the established pattern). This includes finding the Nodes editor, creating nodes, linking them, setting properties, etc.
+    *   Ensure the method uses the `rpc_request_queue` and `rpc_response_queue` for GUI-related tasks, similar to existing RPC methods like `_create_object_gui`.
+    *   Test this logic iteratively within the FreeCAD Python console or by temporarily calling it from an existing `execute_code` script if needed for rapid prototyping of the internal logic *before* formalizing the MCP tool.
+    *   The RPC method should return a dictionary containing `{"success": True/False, "data": ..., "error": ...}` or similar structured information.
 
 ### 2. Change Summary Documentation
 
-*   **Objective**: Document the working Python script and its functionality before creating the formal MCP tool.
+*   **Objective**: Document the new RPC method and its intended MCP tool functionality.
 *   **Method**:
-    *   Once a working Python script is verified (from Step 1), create a concise change summary.
+    *   Once the RPC method logic is working (from Step 1), create a concise change summary.
     *   This summary should detail:
-        *   The purpose of the script/intended tool.
-        *   The final, verified Python script that will be the core of the new MCP tool.
-        *   Key features or functionalities achieved by the script.
-        *   Any important notes, observations, or prerequisites discovered during the script development process (e.g., "Nodes workbench must be active," "Specific node types require certain initializations").
-    *   Output this summary as a complete Markdown file for the `docs/changes/` directory (e.g., `docs/changes/XXX_implement_new_tool_name.md`, where XXX is the next sequential number). the user will paste this output across manually. 
+        *   The purpose of the new RPC method and its corresponding MCP tool.
+        *   The signature and a brief description of the RPC method added to `addon/FreeCADMCP/rpc_server/rpc_server.py`.
+        *   Key functionalities achieved.
+        *   Any important notes, observations, or prerequisites (e.g., "Nodes workbench must be active").
+    *   Output this summary as a complete Markdown file for the `docs/changes/` directory (e.g., `docs/changes/XXX_implement_new_tool_name.md`).
 
-### 3. MCP Tool Implementation
+### 3. MCP Tool Implementation (in `freecad-mcp` server)
 
-*   **Objective**: Integrate the verified script's logic into a new, dedicated MCP tool within the `freecad-mcp` server.
+*   **Objective**: Create a new MCP tool in `src/freecad_mcp/server.py` that calls the newly defined RPC method.
 *   **Method**:
-    *   Define a new tool function (e.g., `mcp_freecad_nodes_link_nodes`) in the MCP server's Python code, primarily in `src/freecad_mcp/server.py`.
-    *   This new tool will typically wrap the Python script developed in Step 1. The script will be embedded as a string within the tool function and executed using `freecad.execute_code`.
-    *   Parameters for the new MCP tool (e.g., `node_id_or_title`, `socket_index`) should be clearly defined. These parameters will be interpolated into the Python script string before execution. Ensure proper sanitization or quoting if necessary when embedding parameters into the script string.
-    *   The tool function must handle inputs, construct the script with these inputs, call `freecad.execute_code`, and then process the results (including any output printed by the script and the success/error status from `execute_code`).
-    *   The tool should return appropriate feedback to the MCP client (AI), including success/failure messages and ideally a screenshot of the Nodes workbench using `freecad.get_nodes_workbench_screenshot` after the operation.
-    *   Use filesystem tools like `filesystem.edit_file` or `filesystem.write_file` to modify `src/freecad_mcp/server.py` and any other relevant server files.
+    *   Define a new tool function (e.g., `mcp_freecad_nodes_link_nodes`) in `src/freecad_mcp/server.py`.
+    *   This tool function will call the corresponding new RPC method on the `FreeCADConnection` object (e.g., `freecad.nodes_link_nodes(...)`).
+    *   Define clear parameters for the MCP tool. These parameters will be passed directly to the RPC method.
+    *   The MCP tool function must handle the inputs, call the RPC method, and then process the structured dictionary returned by the RPC method.
+    *   The tool should return appropriate feedback to the MCP client (AI), including success/failure messages derived from the RPC response, and ideally a screenshot of the Nodes workbench using `freecad.get_nodes_workbench_screenshot` (if applicable and successful).
+    *   Modify `src/freecad_mcp/server.py` and `addon/FreeCADMCP/rpc_server/rpc_server.py`.
 
-### 4. Tool Testing
+### 4. Tool and RPC Method Testing
 
-*   **Objective**: Verify that the newly implemented MCP tool functions correctly as an atomic operation.
+*   **Objective**: Verify that the new RPC method and the MCP tool function correctly together as an atomic operation.
 *   **Method**:
     *   Call the newly created MCP tool directly with a variety of valid and potentially invalid parameters.
-    *   Check the response from the tool to ensure it indicates success/failure correctly and provides the expected output (e.g., confirmation messages, screenshots, data).
-    *   If the tool involves changes in FreeCAD, visually inspect the FreeCAD environment (if possible) or use `freecad.get_nodes_workbench_screenshot`, `freecad.execute_code` (to run verification scripts), or other query tools (`freecad.get_object_properties` if applicable to Nodes elements) to confirm the changes were applied correctly.
-    *   Iterate on Step 3 (MCP Tool Implementation) and Step 4 if issues are found. This might involve refining the embedded Python script or the parameter handling in the MCP tool function.
+    *   Check the response from the MCP tool to ensure it correctly reflects the success/failure and data from the RPC method.
+    *   If the operation involves changes in FreeCAD, visually inspect the FreeCAD environment or use `freecad.get_nodes_workbench_screenshot` and other query tools to confirm the changes were applied correctly.
+    *   Iterate on Step 1 (RPC Method Logic) and Step 3 (MCP Tool Implementation) if issues are found. This might involve refining the RPC method logic in the addon or the parameter handling in the MCP tool function.
 
-This systematic approach ensures that each tool is well-tested at the script level within FreeCAD's environment before being integrated as a formal MCP tool, and then tested again in its final, callable form from the MCP server.
+This systematic approach ensures that operations are implemented robustly within the FreeCAD addon's RPC interface and then cleanly exposed as MCP tools.
